@@ -29,6 +29,70 @@ function parseMode(value: string | null): LeaderboardMode {
   return "global";
 }
 
+function shouldKeepEntry(entry: {
+  powerScore: number;
+  bestStreak: number;
+  flawlessRuns: number;
+  bestScore: number;
+  bestSoloScore: number;
+  bestRankedScore: number;
+  bestTournamentScore: number;
+  totalGames: number;
+}) {
+  return (
+    entry.totalGames > 0 ||
+    entry.powerScore > 0 ||
+    entry.bestScore > 0 ||
+    entry.bestStreak > 0 ||
+    entry.flawlessRuns > 0 ||
+    entry.bestSoloScore > 0 ||
+    entry.bestRankedScore > 0 ||
+    entry.bestTournamentScore > 0
+  );
+}
+
+function getModeScore(entry: {
+  powerScore: number;
+  bestScore: number;
+  bestStreak: number;
+  flawlessRuns: number;
+  bestSoloScore: number;
+  bestRankedScore: number;
+  bestTournamentScore: number;
+  totalGames: number;
+}) {
+  return {
+    global: [
+      entry.powerScore,
+      entry.bestStreak,
+      entry.bestScore,
+      entry.flawlessRuns,
+      entry.totalGames,
+    ],
+    solo: [
+      entry.bestSoloScore,
+      entry.powerScore,
+      entry.bestStreak,
+      entry.flawlessRuns,
+      entry.bestScore,
+    ],
+    ranked: [
+      entry.bestRankedScore,
+      entry.powerScore,
+      entry.bestStreak,
+      entry.flawlessRuns,
+      entry.bestScore,
+    ],
+    tournament: [
+      entry.bestTournamentScore,
+      entry.powerScore,
+      entry.bestStreak,
+      entry.flawlessRuns,
+      entry.bestScore,
+    ],
+  };
+}
+
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
@@ -36,40 +100,7 @@ export async function GET(request: Request) {
     const limit = parseLimit(searchParams.get("limit"));
     const mode = parseMode(searchParams.get("mode"));
 
-    const leaderboard = await prisma.gameStat.findMany({
-      take: limit,
-      orderBy:
-        mode === "solo"
-          ? [
-              { bestSoloScore: "desc" },
-              { powerScore: "desc" },
-              { bestStreak: "desc" },
-              { flawlessRuns: "desc" },
-              { bestScore: "desc" },
-            ]
-          : mode === "ranked"
-          ? [
-              { bestRankedScore: "desc" },
-              { powerScore: "desc" },
-              { bestStreak: "desc" },
-              { flawlessRuns: "desc" },
-              { bestScore: "desc" },
-            ]
-          : mode === "tournament"
-          ? [
-              { bestTournamentScore: "desc" },
-              { powerScore: "desc" },
-              { bestStreak: "desc" },
-              { flawlessRuns: "desc" },
-              { bestScore: "desc" },
-            ]
-          : [
-              { powerScore: "desc" },
-              { bestStreak: "desc" },
-              { bestScore: "desc" },
-              { flawlessRuns: "desc" },
-              { totalGames: "desc" },
-            ],
+    const rawLeaderboard = await prisma.gameStat.findMany({
       select: {
         profileId: true,
         powerScore: true,
@@ -96,7 +127,33 @@ export async function GET(request: Request) {
       },
     });
 
-    const items = leaderboard.map((entry, index) => ({
+    const filtered = rawLeaderboard.filter((entry) =>
+      shouldKeepEntry({
+        powerScore: entry.powerScore,
+        bestStreak: entry.bestStreak,
+        flawlessRuns: entry.flawlessRuns,
+        bestScore: entry.bestScore,
+        bestSoloScore: entry.bestSoloScore,
+        bestRankedScore: entry.bestRankedScore,
+        bestTournamentScore: entry.bestTournamentScore,
+        totalGames: entry.totalGames,
+      })
+    );
+
+    const sorted = filtered.sort((a, b) => {
+      const aScores = getModeScore(a)[mode];
+      const bScores = getModeScore(b)[mode];
+
+      for (let i = 0; i < aScores.length; i += 1) {
+        if (bScores[i] !== aScores[i]) {
+          return bScores[i] - aScores[i];
+        }
+      }
+
+      return a.profile.displayName.localeCompare(b.profile.displayName);
+    });
+
+    const items = sorted.slice(0, limit).map((entry, index) => ({
       rank: index + 1,
       profileId: entry.profileId,
       powerScore: entry.powerScore,
