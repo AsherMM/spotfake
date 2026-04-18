@@ -1,0 +1,127 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum AuthProvider {
+  guest
+  email
+  google
+  discord
+}
+
+enum GameMode {
+  solo
+  ranked
+  tournament
+}
+
+enum GameDifficulty {
+  easy
+  medium
+  hard
+}
+
+enum SessionEndReason {
+  wrong
+  timeout
+  completed
+  quit
+}
+
+enum ImageCategory {
+  faces
+  landscapes
+  objects
+  animals
+  scenes
+}
+
+model Profile {
+  id              String        @id @default(cuid())
+  authUserId      String?       @unique
+  email           String?       @unique
+  displayName     String
+  fullName        String?
+  avatarUrl       String?
+  isGuest         Boolean       @default(false)
+  guestToken      String?       @unique
+  provider        String?
+  lastLoginAt     DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  gameStats       GameStat?
+  gameSessions    GameSession[]
+
+  @@index([authUserId])
+  @@index([guestToken])
+  @@index([displayName])
+}
+
+model GameStat {
+  id                  String      @id @default(cuid())
+  profileId           String      @unique
+
+  bestScore           Int         @default(0)
+  bestStreak          Int         @default(0)
+  flawlessRuns        Int         @default(0)
+  powerScore          Int         @default(0)
+
+  totalGames          Int         @default(0)
+  totalWins           Int         @default(0)
+  totalLosses         Int         @default(0)
+  totalTimeoutLosses  Int         @default(0)
+
+  totalCorrect        Int         @default(0)
+  totalWrong          Int         @default(0)
+  totalPlayTimeMs     Int         @default(0)
+  totalScoreCumulated Int         @default(0)
+  averageScore        Float       @default(0)
+
+  bestSoloScore       Int         @default(0)
+  bestRankedScore     Int         @default(0)
+  bestTournamentScore Int         @default(0)
+
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  profile             Profile     @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([bestScore])
+  @@index([bestStreak])
+  @@index([flawlessRuns])
+  @@index([powerScore])
+}
+
+model GameSession {
+  id                 String           @id @default(cuid())
+  profileId          String
+
+  mode               GameMode         @default(solo)
+  score              Int
+  streakReached      Int              @default(0)
+
+  correctAnswers     Int              @default(0)
+  wrongAnswers       Int              @default(0)
+
+  timedOut           Boolean          @default(false)
+  endedBy            SessionEndReason
+  flawless           Boolean          @default(false)
+
+  durationMs         Int              @default(0)
+  difficultyReached  GameDifficulty?
+  category           ImageCategory?
+
+  createdAt          DateTime         @default(now())
+
+  profile            Profile          @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([profileId, createdAt])
+  @@index([mode, createdAt])
+  @@index([score, createdAt])
+  @@index([streakReached, createdAt])
+}
