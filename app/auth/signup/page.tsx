@@ -217,22 +217,6 @@ export default function SignupPage() {
                 Continue with Discord
               </button>
             </div>
-
-            <div className="mt-6">
-              <Link
-                href="/auth/register"
-                className="inline-flex w-full items-center justify-center rounded-2xl border border-white/10 bg-black/30 px-4 py-3 font-semibold text-white transition hover:border-white/20 hover:bg-white/5"
-              >
-                Sign up normally
-              </Link>
-            </div>
-
-            <p className="mt-6 text-center text-sm text-zinc-400">
-              Already have an account?{" "}
-              <Link href="/auth/login" className="font-semibold text-white">
-                Sign in
-              </Link>
-            </p>
           </div>
         </div>
       </div>

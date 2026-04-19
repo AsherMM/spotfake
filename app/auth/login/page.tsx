@@ -206,13 +206,6 @@ export default function LoginPage() {
               >
                 Back to guest / quick start
               </Link>
-
-              <Link
-                href="/auth/register"
-                className="inline-flex w-full items-center justify-center rounded-2xl border border-white/10 bg-black/30 px-4 py-3 font-semibold text-white transition hover:border-white/20 hover:bg-white/5"
-              >
-                Create a full account
-              </Link>
             </div>
           </div>
         </div>

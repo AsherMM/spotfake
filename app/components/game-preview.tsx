@@ -7,415 +7,41 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
-  type ClipboardEvent as ReactClipboardEvent,
-  type DragEvent as ReactDragEvent,
-  type MouseEvent as ReactMouseEvent,
-  type PointerEvent as ReactPointerEvent,
 } from "react";
 import { mockImages } from "@/app/lib/mock-images";
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Types
-// ──────────────────────────────────────────────────────────────────────────────
-
-type Answer = "real" | "fake";
-type Feedback = "correct" | "wrong" | "timeout" | null;
-type Difficulty = "easy" | "medium" | "hard";
-type GameMode = "solo" | "ranked" | "tournament";
-type EndReason = "wrong" | "timeout" | "completed" | "quit";
-type ImageCategory = "faces" | "landscapes" | "objects" | "animals" | "scenes";
-
-export type GameOverPayload = {
-  streak: number;
-  score: number;
-  isNewRecord: boolean;
-  flawless: boolean;
-};
-
-type GamePreviewProps = {
-  mode?: GameMode;
-  onGameOver?: (payload: GameOverPayload) => void;
-};
-
-type MockImage = {
-  src: string;
-  alt: string;
-  type: Answer;
-  difficulty: Difficulty;
-  category: ImageCategory;
-};
-
-type RoundSeed = {
-  currentIndex: number;
-  nextIndex: number;
-};
-
-type SubmitState = "idle" | "submitting" | "submitted" | "error";
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Constants
-// ──────────────────────────────────────────────────────────────────────────────
-
-const ROUND_DURATION_MS = 3000;
-const FEEDBACK_DELAY_MS = 520;
-const BEST_SCORE_KEY = "spotfake-best-score";
-const RECENT_GLOBAL_KEY = "spotfake-recent-global-v1";
-
-const SWIPE_TRIGGER_PX = 110;
-const MAX_DRAG_PX = 180;
-const MAX_ROTATION_DEG = 14;
-
-const RECENT_HISTORY_SIZE = 16;
-const GLOBAL_RECENT_HISTORY_SIZE = 24;
-const PANIC_THRESHOLD_MS = 800;
-const TIMER_FPS_LIMIT_MS = 33;
-
-const EXIT_ANIMATION_MS = 160;
-const ENTER_ANIMATION_MS = 260;
-const BUMP_ANIMATION_MS = 320;
-
-const PRELOAD_BUFFER_SIZE = 3;
-
-// ──────────────────────────────────────────────────────────────────────────────
-// SSR guard
-// ──────────────────────────────────────────────────────────────────────────────
-
-function subscribeToClientReady() {
-  return () => {};
-}
-function getClientSnapshot() {
-  return true;
-}
-function getServerSnapshot() {
-  return false;
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Data helpers
-// ──────────────────────────────────────────────────────────────────────────────
+import {
+  BUMP_ANIMATION_MS,
+  ENTER_ANIMATION_MS,
+  EXIT_ANIMATION_MS,
+  FEEDBACK_DELAY_MS,
+  PANIC_THRESHOLD_MS,
+  ROUND_DURATION_MS,
+  TIMER_FPS_LIMIT_MS,
+} from "@/app/components/game-preview.constants";
+import type {
+  Answer,
+  Feedback,
+  GamePreviewProps,
+  MockImage,
+  SubmitState,
+} from "@/app/components/game-preview.types";
+import {
+  getClientSnapshot,
+  getServerSnapshot,
+  haptic,
+  hasImages,
+  loadBestScore,
+  nowMs,
+  preloadImage,
+  saveBestScore,
+  subscribeToClientReady,
+} from "@/app/components/game-preview.utils";
+import { useGameRandomizer } from "@/app/components/hooks/use-game-randomizer";
+import { useRoundTimer } from "@/app/components/hooks/use-round-timer";
+import { useSpotfakeProtection } from "@/app/components/hooks/use-spotfake-protection";
+import { useSwipeControls } from "@/app/components/hooks/use-swipe-controls";
 
 const images = mockImages as MockImage[];
-
-function hasImages(list: MockImage[]): boolean {
-  return Array.isArray(list) && list.length > 0;
-}
-
-function clamp(v: number, lo: number, hi: number) {
-  return Math.min(Math.max(v, lo), hi);
-}
-
-function nowMs() {
-  return typeof performance !== "undefined" ? performance.now() : Date.now();
-}
-
-function loadBestScore(): number {
-  if (typeof window === "undefined") return 0;
-  try {
-    const raw = window.localStorage.getItem(BEST_SCORE_KEY);
-    const value = Number(raw);
-    return Number.isFinite(value) && value >= 0 ? value : 0;
-  } catch {
-    return 0;
-  }
-}
-
-function saveBestScore(v: number): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(BEST_SCORE_KEY, String(v));
-  } catch {
-    // no-op
-  }
-}
-
-function loadGlobalRecentHistory(): number[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(RECENT_GLOBAL_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((x) => Number.isInteger(x) && x >= 0);
-  } catch {
-    return [];
-  }
-}
-
-function saveGlobalRecentHistory(indexes: number[]) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(
-      RECENT_GLOBAL_KEY,
-      JSON.stringify(indexes.slice(-GLOBAL_RECENT_HISTORY_SIZE))
-    );
-  } catch {
-    // no-op
-  }
-}
-
-function getDifficulty(score: number): Difficulty {
-  if (score >= 8) return "hard";
-  if (score >= 4) return "medium";
-  return "easy";
-}
-
-function getAdaptiveDifficulty(score: number, avgReactionMs: number): Difficulty {
-  const base = getDifficulty(score);
-
-  if (avgReactionMs > 0 && avgReactionMs <= 850) {
-    if (score >= 6) return "hard";
-    if (score >= 3) return "medium";
-    return "easy";
-  }
-
-  if (avgReactionMs >= 1600) {
-    if (score >= 10) return "hard";
-    if (score >= 5) return "medium";
-    return "easy";
-  }
-
-  return base;
-}
-
-function haptic(pattern: number | number[]) {
-  try {
-    navigator.vibrate?.(pattern);
-  } catch {
-    // no-op
-  }
-}
-
-function preloadImage(src?: string) {
-  if (!src || typeof window === "undefined") return;
-  const img = new window.Image();
-  img.decoding = "async";
-  img.src = src;
-}
-
-function isTypingTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  const tag = target.tagName;
-  return (
-    tag === "INPUT" ||
-    tag === "TEXTAREA" ||
-    tag === "SELECT" ||
-    target.isContentEditable
-  );
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Randomisation
-// ──────────────────────────────────────────────────────────────────────────────
-
-function weightedPickIndex(
-  weighted: Array<{ index: number; weight: number }>,
-  random: () => number
-): number {
-  const total = weighted.reduce((sum, item) => sum + item.weight, 0);
-  if (total <= 0) return weighted[0]?.index ?? 0;
-
-  let cursor = random() * total;
-
-  for (const item of weighted) {
-    cursor -= item.weight;
-    if (cursor <= 0) return item.index;
-  }
-
-  return weighted[weighted.length - 1]?.index ?? 0;
-}
-
-function countRecentTypeStreak(
-  recentIndexes: number[],
-  expectedType: Answer | undefined
-): number {
-  if (!expectedType) return 0;
-
-  let streak = 0;
-  for (let i = recentIndexes.length - 1; i >= 0; i -= 1) {
-    const img = images[recentIndexes[i]];
-    if (!img) break;
-    if (img.type === expectedType) streak += 1;
-    else break;
-  }
-  return streak;
-}
-
-function countRecentCategoryStreak(
-  recentIndexes: number[],
-  expectedCategory: ImageCategory | undefined
-): number {
-  if (!expectedCategory) return 0;
-
-  let streak = 0;
-  for (let i = recentIndexes.length - 1; i >= 0; i -= 1) {
-    const img = images[recentIndexes[i]];
-    if (!img) break;
-    if (img.category === expectedCategory) streak += 1;
-    else break;
-  }
-  return streak;
-}
-
-function pickNextIndex(params: {
-  excludeIndex?: number;
-  difficulty: Difficulty;
-  recentIndexes: number[];
-  globalRecentIndexes?: number[];
-  lastType?: Answer;
-  lastCategory?: ImageCategory;
-  random: () => number;
-}): number {
-  const {
-    excludeIndex = -1,
-    difficulty: _difficulty,
-    recentIndexes,
-    globalRecentIndexes = [],
-    lastType,
-    lastCategory,
-    random,
-  } = params;
-
-  if (!hasImages(images)) return -1;
-  if (images.length === 1) return 0;
-
-  const recentSet = new Set(recentIndexes);
-  const globalRecentSet = new Set(globalRecentIndexes);
-
-  const candidates = images
-    .map((img, index) => ({ img, index }))
-    .filter(({ index }) => index !== excludeIndex);
-
-  if (candidates.length === 0) return 0;
-
-  const typeStreak = countRecentTypeStreak(recentIndexes, lastType);
-  const categoryStreak = countRecentCategoryStreak(recentIndexes, lastCategory);
-
-  const weighted = candidates.map(({ img, index }) => {
-    let weight = 10;
-
-    if (!recentSet.has(index)) {
-      weight += 18;
-    } else {
-      weight -= 12;
-    }
-
-    if (!globalRecentSet.has(index)) {
-      weight += 5;
-    } else {
-      weight -= 3;
-    }
-
-    if (lastType) {
-      if (img.type !== lastType) {
-        weight += 6;
-      } else {
-        weight -= 3;
-      }
-    }
-
-    if (typeStreak >= 2 && lastType) {
-      if (img.type === lastType) weight -= 8;
-      else weight += 8;
-    }
-
-    if (typeStreak >= 3 && lastType) {
-      if (img.type === lastType) weight -= 12;
-      else weight += 10;
-    }
-
-    if (lastCategory) {
-      if (img.category !== lastCategory) {
-        weight += 4;
-      } else {
-        weight -= 2;
-      }
-    }
-
-    if (categoryStreak >= 2 && lastCategory) {
-      if (img.category === lastCategory) weight -= 6;
-      else weight += 5;
-    }
-
-    if (categoryStreak >= 3 && lastCategory) {
-      if (img.category === lastCategory) weight -= 10;
-      else weight += 7;
-    }
-
-    const localPos = recentIndexes.lastIndexOf(index);
-    if (localPos !== -1) {
-      const age = recentIndexes.length - localPos;
-      weight += Math.max(0, age - 1);
-    }
-
-    const globalPos = globalRecentIndexes.lastIndexOf(index);
-    if (globalPos !== -1) {
-      const age = globalRecentIndexes.length - globalPos;
-      weight += Math.max(0, Math.floor(age / 3));
-    }
-
-    const recentWindow = recentIndexes
-      .slice(-8)
-      .map((i) => images[i]?.difficulty)
-      .filter(Boolean);
-
-    const sameDifficultyCount = recentWindow.filter(
-      (d) => d === img.difficulty
-    ).length;
-
-    if (sameDifficultyCount <= 1) {
-      weight += 3;
-    } else if (sameDifficultyCount >= 4) {
-      weight -= 4;
-    }
-
-    return {
-      index,
-      weight: Math.max(1, weight),
-    };
-  });
-
-  return weightedPickIndex(weighted, random);
-}
-
-function buildInitialRound(
-  random: () => number,
-  globalRecentIndexes: number[]
-): RoundSeed {
-  if (!hasImages(images)) {
-    return { currentIndex: -1, nextIndex: -1 };
-  }
-
-  if (images.length === 1) {
-    return { currentIndex: 0, nextIndex: 0 };
-  }
-
-  const first = pickNextIndex({
-    excludeIndex: -1,
-    difficulty: "easy",
-    recentIndexes: [],
-    globalRecentIndexes,
-    lastType: undefined,
-    lastCategory: undefined,
-    random,
-  });
-
-  const firstImage = images[first];
-
-  const second = pickNextIndex({
-    excludeIndex: first,
-    difficulty: "easy",
-    recentIndexes: first >= 0 ? [first] : [],
-    globalRecentIndexes,
-    lastType: firstImage?.type,
-    lastCategory: firstImage?.category,
-    random,
-  });
-
-  return {
-    currentIndex: first,
-    nextIndex: second,
-  };
-}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // UI
@@ -464,8 +90,8 @@ function EmptyGameState() {
   );
 }
 
-function DifficultyBadge({ difficulty }: { difficulty: Difficulty }) {
-  const styles: Record<Difficulty, string> = {
+function DifficultyBadge({ difficulty }: { difficulty: MockImage["difficulty"] }) {
+  const styles: Record<MockImage["difficulty"], string> = {
     easy: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
     medium: "border-amber-500/30 bg-amber-500/10 text-amber-300",
     hard: "border-red-500/30 bg-red-500/10 text-red-300",
@@ -604,25 +230,20 @@ function CardStack({ nextSrc }: { nextSrc?: string }) {
 // ──────────────────────────────────────────────────────────────────────────────
 
 function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
-  const rng = useCallback(() => Math.random(), []);  const [globalRecentHistory, setGlobalRecentHistory] = useState<number[]>(() =>
-    loadGlobalRecentHistory()
-  );
-  const [avgReactionMsUi, setAvgReactionMsUi] = useState(0);
-  const [didSetNewRecord, setDidSetNewRecord] = useState(false);
+  const {
+    buildInitialRound,
+    buildNextRound,
+    preloadLookahead,
+    pushGlobalRecent,
+    resetRandomizer,
+  } = useGameRandomizer({ images });
 
-  const [initialRound] = useState<RoundSeed>(() =>
-    buildInitialRound(rng, globalRecentHistory)
-  );
-
-  const avgReactionMsRef = useRef(0);
-  const answersCountRef = useRef(0);
-  const roundAnswerStartedAtRef = useRef(0);
+  const [initialRound] = useState(() => buildInitialRound());
 
   const [score, setScore] = useState(0);
   const [best, setBest] = useState(() => loadBestScore());
   const [isGameOver, setIsGameOver] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
-  const [progress, setProgress] = useState(100);
   const [isLocked, setIsLocked] = useState(false);
   const [revealedType, setRevealedType] = useState<Answer | null>(null);
   const [streakBumped, setStreakBumped] = useState(false);
@@ -631,46 +252,34 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
   const [correctAnswers, setCorrectAnswers] = useState(0);
   const [wrongAnswers, setWrongAnswers] = useState(0);
   const [submitState, setSubmitState] = useState<SubmitState>("idle");
-  const [dragX, setDragX] = useState(0);
-  const [dragY, setDragY] = useState(0);
-  const [isDragging, setIsDragging] = useState(false);
 
   const [currentIndex, setCurrentIndex] = useState(initialRound.currentIndex);
   const [nextIndex, setNextIndex] = useState(initialRound.nextIndex);
 
   const scoreRef = useRef(score);
-  const bestRef = useRef(best);
   const isGameOverRef = useRef(isGameOver);
   const isLockedRef = useRef(isLocked);
   const correctAnswersRef = useRef(correctAnswers);
   const wrongAnswersRef = useRef(wrongAnswers);
   const currentIndexRef = useRef(currentIndex);
-  const recentIndexesRef = useRef<number[]>([]);
+
   const submittedRef = useRef(false);
   const sessionStartRef = useRef(0);
-
-  const rafRef = useRef<number | null>(null);
-  const roundStartRef = useRef<number | null>(null);
-  const lastTimerFrameRef = useRef(0);
+  const avgReactionMsRef = useRef(0);
+  const roundAnswerStartedAtRef = useRef(0);
 
   const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const enterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const bumpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const pointerIdRef = useRef<number | null>(null);
-  const pointerElementRef = useRef<HTMLDivElement | null>(null);
-  const pointerStartXRef = useRef(0);
-  const pointerStartYRef = useRef(0);
-
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  const timeoutRef = useRef<() => void>(() => {});
+  const finishGameRef = useRef<(reason: "wrong" | "timeout") => void>(() => {});
+  const commitSwipeRef = useRef<(answer: Answer) => void>(() => {});
 
   useEffect(() => {
     scoreRef.current = score;
   }, [score]);
-
-  useEffect(() => {
-    bestRef.current = best;
-  }, [best]);
 
   useEffect(() => {
     isGameOverRef.current = isGameOver;
@@ -695,26 +304,6 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
   const currentImage = currentIndex >= 0 ? images[currentIndex] : undefined;
   const nextImage = nextIndex >= 0 ? images[nextIndex] : undefined;
   const currentDifficulty = currentImage?.difficulty ?? "easy";
-
-  const rotation = useMemo(
-    () =>
-      clamp(
-        (dragX / MAX_DRAG_PX) * MAX_ROTATION_DEG,
-        -MAX_ROTATION_DEG,
-        MAX_ROTATION_DEG
-      ),
-    [dragX]
-  );
-
-  const remainingMs = (progress / 100) * ROUND_DURATION_MS;
-  const isPanic = remainingMs < PANIC_THRESHOLD_MS && !feedback && !isGameOver;
-
-  const stopRaf = useCallback(() => {
-    if (rafRef.current !== null) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    }
-  }, []);
 
   const stopFeedbackTimer = useCallback(() => {
     if (feedbackTimerRef.current !== null) {
@@ -742,6 +331,20 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
     abortControllerRef.current = null;
   }, []);
 
+  const {
+    progress,
+    isPanic,
+    startTimer,
+    stopRaf,
+    resetTimer,
+    setProgress,
+  } = useRoundTimer({
+    durationMs: ROUND_DURATION_MS,
+    panicThresholdMs: PANIC_THRESHOLD_MS,
+    fpsLimitMs: TIMER_FPS_LIMIT_MS,
+    onTimeout: () => timeoutRef.current(),
+  });
+
   const clearAllTimers = useCallback(() => {
     stopRaf();
     stopFeedbackTimer();
@@ -749,40 +352,23 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
     stopBumpTimer();
   }, [stopBumpTimer, stopEnterTimer, stopFeedbackTimer, stopRaf]);
 
-  const resetPointerState = useCallback(() => {
-    const el = pointerElementRef.current;
-    const pointerId = pointerIdRef.current;
-
-    try {
-      if (el && pointerId !== null && el.hasPointerCapture(pointerId)) {
-        el.releasePointerCapture(pointerId);
-      }
-    } catch {
-      // no-op
-    }
-
-    pointerElementRef.current = null;
-    pointerIdRef.current = null;
-    setDragX(0);
-    setDragY(0);
-    setIsDragging(false);
-  }, []);
-
-  const pushGlobalRecent = useCallback((index: number) => {
-    if (index < 0) return;
-
-    setGlobalRecentHistory((prev) => {
-      const next = [...prev, index].slice(-GLOBAL_RECENT_HISTORY_SIZE);
-      saveGlobalRecentHistory(next);
-      return next;
-    });
-  }, []);
+  const {
+    dragX,
+    dragY,
+    isDragging,
+    rotation,
+    resetPointerState,
+    handlePointerDown,
+    handlePointerMove,
+    handlePointerEnd,
+  } = useSwipeControls({
+    onCommitSwipe: (answer) => commitSwipeRef.current(answer),
+  });
 
   const updateReactionAverage = useCallback(() => {
     if (!roundAnswerStartedAtRef.current) return;
 
     const reactionMs = Math.max(0, Math.round(nowMs() - roundAnswerStartedAtRef.current));
-    answersCountRef.current += 1;
 
     let nextAvg = reactionMs;
     if (avgReactionMsRef.current !== 0) {
@@ -790,94 +376,11 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
     }
 
     avgReactionMsRef.current = nextAvg;
-    setAvgReactionMsUi(nextAvg);
   }, []);
-
-  const buildNextRound = useCallback(
-    (_nextScore: number) => {
-      const current = images[currentIndexRef.current];
-
-      const recent = [...recentIndexesRef.current, currentIndexRef.current].slice(
-        -RECENT_HISTORY_SIZE
-      );
-
-      recentIndexesRef.current = recent;
-
-      const nextCurrent = pickNextIndex({
-        excludeIndex: currentIndexRef.current,
-        difficulty: "easy",
-        recentIndexes: recent,
-        globalRecentIndexes: globalRecentHistory,
-        lastType: current?.type,
-        lastCategory: current?.category,
-        random: rng,
-      });
-
-      const previewBase = [...recent, nextCurrent].slice(-RECENT_HISTORY_SIZE);
-      const nextCurrentImage = images[nextCurrent];
-
-      const nextNext = pickNextIndex({
-        excludeIndex: nextCurrent,
-        difficulty: "easy",
-        recentIndexes: previewBase,
-        globalRecentIndexes: globalRecentHistory,
-        lastType: nextCurrentImage?.type,
-        lastCategory: nextCurrentImage?.category,
-        random: rng,
-      });
-
-      return {
-        nextCurrent,
-        nextNext,
-      };
-    },
-    [globalRecentHistory, rng]
-  );
-
-  const preloadLookahead = useCallback(
-    (baseScore: number) => {
-      if (!currentImage) return;
-
-      let tempExclude = currentIndexRef.current;
-      let tempRecent = [...recentIndexesRef.current, currentIndexRef.current].slice(
-        -RECENT_HISTORY_SIZE
-      );
-      let tempLastType = currentImage.type;
-      let tempLastCategory = currentImage.category;
-
-      const targetDifficulty = getAdaptiveDifficulty(
-        baseScore,
-        avgReactionMsRef.current
-      );
-
-      for (let i = 0; i < PRELOAD_BUFFER_SIZE; i += 1) {
-        const idx = pickNextIndex({
-          excludeIndex: tempExclude,
-          difficulty: targetDifficulty,
-          recentIndexes: tempRecent,
-          globalRecentIndexes: globalRecentHistory,
-          lastType: tempLastType,
-          lastCategory: tempLastCategory,
-          random: rng,
-        });
-
-        const img = images[idx];
-        preloadImage(img?.src);
-
-        if (idx >= 0) {
-          tempRecent = [...tempRecent, idx].slice(-RECENT_HISTORY_SIZE);
-          tempExclude = idx;
-          tempLastType = img?.type;
-          tempLastCategory = img?.category;
-        }
-      }
-    },
-    [currentImage, globalRecentHistory, rng]
-  );
 
   const submitSession = useCallback(
     async (
-      reason: EndReason,
+      reason: "wrong" | "timeout",
       finalScore: number,
       finalCorrect: number,
       finalWrong: number
@@ -948,9 +451,6 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
       const finalWrong =
         reason === "wrong" ? wrongAnswersRef.current + 1 : wrongAnswersRef.current;
       const img = images[currentIndexRef.current];
-      const previousBest = bestRef.current;
-      const isNewRecord = finalScore > previousBest;
-      const nextBest = Math.max(previousBest, finalScore);
 
       haptic(reason === "wrong" ? [80, 30, 80] : [200]);
 
@@ -959,7 +459,6 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
       setIsGameOver(true);
       setRevealedType(img?.type ?? null);
       setProgress(0);
-      setDidSetNewRecord(isNewRecord);
 
       if (reason === "wrong") {
         setWrongAnswers(finalWrong);
@@ -967,24 +466,36 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
 
       resetPointerState();
 
-      saveBestScore(nextBest);
-      setBest(nextBest);
+      setBest((prev) => {
+        const nextBest = Math.max(prev, finalScore);
+        saveBestScore(nextBest);
 
-      onGameOver?.({
-        streak: finalScore,
-        score: finalScore,
-        isNewRecord,
-        flawless: finalScore > 0 && finalWrong === 0 && reason !== "timeout",
+        onGameOver?.({
+          streak: finalScore,
+          score: finalScore,
+          isNewRecord: finalScore > prev,
+          flawless: finalScore > 0 && finalWrong === 0 && reason !== "timeout",
+        });
+
+        return nextBest;
       });
 
       void submitSession(reason, finalScore, finalCorrect, finalWrong);
     },
-    [clearAllTimers, onGameOver, resetPointerState, submitSession]
+    [clearAllTimers, onGameOver, resetPointerState, setProgress, submitSession]
   );
+
+  useEffect(() => {
+    finishGameRef.current = finishGame;
+  }, [finishGame]);
 
   const advanceRound = useCallback(
     (nextScore: number) => {
-      const { nextCurrent, nextNext } = buildNextRound(nextScore);
+      const { nextCurrent, nextNext } = buildNextRound({
+        currentIndex: currentIndexRef.current,
+        nextScore,
+        avgReactionMs: avgReactionMsRef.current,
+      });
 
       setProgress(100);
       setFeedback(null);
@@ -1008,9 +519,13 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
         }, ENTER_ANIMATION_MS);
       });
 
-      preloadLookahead(nextScore);
+      preloadLookahead({
+        currentIndex: nextCurrent,
+        baseScore: nextScore,
+        avgReactionMs: avgReactionMsRef.current,
+      });
     },
-    [buildNextRound, preloadLookahead, resetPointerState, stopEnterTimer]
+    [buildNextRound, preloadLookahead, resetPointerState, setProgress, stopEnterTimer]
   );
 
   const handleCorrectAnswer = useCallback(() => {
@@ -1073,7 +588,7 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
     [finishGame, handleCorrectAnswer, pushGlobalRecent]
   );
 
-  const commitSwipe = useCallback(
+  const commitSwipeHandler = useCallback(
     (answer: Answer) => {
       if (isGameOverRef.current || isLockedRef.current) return;
 
@@ -1083,154 +598,30 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
 
       stopFeedbackTimer();
       feedbackTimerRef.current = setTimeout(() => {
-        resetPointerState();
         processAnswer(answer);
+        setCardExiting(null);
+        resetPointerState();
       }, EXIT_ANIMATION_MS);
     },
     [processAnswer, resetPointerState, stopFeedbackTimer]
   );
 
-  const handlePointerDown = useCallback(
-    (e: ReactPointerEvent<HTMLDivElement>) => {
-      if (isGameOverRef.current || isLockedRef.current) return;
-      if (e.button !== 0 && e.pointerType !== "touch" && e.pointerType !== "pen") {
-        return;
-      }
+  useEffect(() => {
+    commitSwipeRef.current = commitSwipeHandler;
+  }, [commitSwipeHandler]);
 
-      pointerIdRef.current = e.pointerId;
-      pointerElementRef.current = e.currentTarget;
-      pointerStartXRef.current = e.clientX;
-      pointerStartYRef.current = e.clientY;
-      setIsDragging(true);
-
-      try {
-        e.currentTarget.setPointerCapture(e.pointerId);
-      } catch {
-        // no-op
-      }
-    },
-    []
-  );
-
-  const handlePointerMove = useCallback(
-    (e: ReactPointerEvent<HTMLDivElement>) => {
-      if (!isDragging) return;
-      if (pointerIdRef.current !== e.pointerId) return;
-
-      const nextDragX = clamp(
-        e.clientX - pointerStartXRef.current,
-        -MAX_DRAG_PX,
-        MAX_DRAG_PX
-      );
-      const nextDragY = clamp(
-        (e.clientY - pointerStartYRef.current) * 0.18,
-        -24,
-        24
-      );
-
-      setDragX(nextDragX);
-      setDragY(nextDragY);
-    },
-    [isDragging]
-  );
-
-  const handlePointerEnd = useCallback(
-    (e?: ReactPointerEvent<HTMLDivElement>) => {
-      if (e && pointerIdRef.current !== null) {
-        try {
-          if (e.currentTarget.hasPointerCapture(pointerIdRef.current)) {
-            e.currentTarget.releasePointerCapture(pointerIdRef.current);
-          }
-        } catch {
-          // no-op
-        }
-      }
-
-      if (!isDragging) {
-        resetPointerState();
-        return;
-      }
-
-      if (dragX <= -SWIPE_TRIGGER_PX) {
-        commitSwipe("real");
-        return;
-      }
-
-      if (dragX >= SWIPE_TRIGGER_PX) {
-        commitSwipe("fake");
-        return;
-      }
-
-      resetPointerState();
-    },
-    [commitSwipe, dragX, isDragging, resetPointerState]
-  );
-
-  const handleProtectedContextMenu = useCallback(
-    (e: ReactMouseEvent<HTMLDivElement>) => {
-      e.preventDefault();
-      e.stopPropagation();
-    },
-    []
-  );
-
-  const handleProtectedDragStart = useCallback(
-    (e: ReactDragEvent<HTMLDivElement>) => {
-      e.preventDefault();
-      e.stopPropagation();
-    },
-    []
-  );
-
-  const handleProtectedCopy = useCallback(
-    (e: ReactClipboardEvent<HTMLDivElement>) => {
-      e.preventDefault();
-      e.stopPropagation();
-    },
-    []
-  );
-
-  const handleProtectedCut = useCallback(
-    (e: ReactClipboardEvent<HTMLDivElement>) => {
-      e.preventDefault();
-      e.stopPropagation();
-    },
-    []
-  );
-
-  const handleProtectedPaste = useCallback(
-    (e: ReactClipboardEvent<HTMLDivElement>) => {
-      e.preventDefault();
-      e.stopPropagation();
-    },
-    []
-  );
-
-  const handleProtectedMouseDown = useCallback(
-    (e: ReactMouseEvent<HTMLDivElement>) => {
-      if (e.button === 2) {
-        e.preventDefault();
-        e.stopPropagation();
-      }
-    },
-    []
-  );
-
-  const handleRestart = useCallback(() => {
+  const restartGame = useCallback(() => {
     clearAllTimers();
     abortSubmit();
     resetPointerState();
 
-    recentIndexesRef.current = [];
+    resetRandomizer();
     submittedRef.current = false;
     sessionStartRef.current = nowMs();
     avgReactionMsRef.current = 0;
-    answersCountRef.current = 0;
     roundAnswerStartedAtRef.current = 0;
-    setAvgReactionMsUi(0);
-    setDidSetNewRecord(false);
 
-    const fresh = buildInitialRound(rng, globalRecentHistory);
+    const fresh = buildInitialRound();
 
     setScore(0);
     setCorrectAnswers(0);
@@ -1249,154 +640,73 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
 
     setCurrentIndex(fresh.currentIndex);
     setNextIndex(fresh.nextIndex);
+
+    preloadLookahead({
+      currentIndex: fresh.currentIndex,
+      baseScore: 0,
+      avgReactionMs: 0,
+    });
   }, [
     abortSubmit,
+    buildInitialRound,
     clearAllTimers,
-    globalRecentHistory,
+    preloadLookahead,
     resetPointerState,
-    rng,
+    resetRandomizer,
+    setProgress,
   ]);
+
+  const {
+    handleProtectedContextMenu,
+    handleProtectedDragStart,
+    handleProtectedCopy,
+    handleProtectedCut,
+    handleProtectedPaste,
+    handleProtectedMouseDown,
+  } = useSpotfakeProtection({
+    onArrowLeft: () => processAnswer("real"),
+    onArrowRight: () => processAnswer("fake"),
+    onEnter: () => {
+      if (isGameOverRef.current) {
+        restartGame();
+      }
+    },
+  });
 
   useEffect(() => {
     sessionStartRef.current = nowMs();
   }, []);
 
   useEffect(() => {
-    preloadImage(nextImage?.src);
-    preloadLookahead(score);
-  }, [nextImage?.src, preloadLookahead, score]);
+    if (nextImage?.src) {
+      preloadImage(nextImage.src);
+    }
+
+    if (currentIndex >= 0) {
+      preloadLookahead({
+        currentIndex,
+        baseScore: score,
+        avgReactionMs: avgReactionMsRef.current,
+      });
+    }
+  }, [currentIndex, nextImage?.src, preloadLookahead, score]);
 
   useEffect(() => {
     if (!currentImage) return;
     if (isGameOver || isLocked) return;
 
-    roundStartRef.current = nowMs();
     roundAnswerStartedAtRef.current = nowMs();
-    lastTimerFrameRef.current = 0;
 
-    const tick = (now: number) => {
-      if (isGameOverRef.current || isLockedRef.current) return;
-      if (roundStartRef.current === null) return;
-
-      const elapsed = now - roundStartRef.current;
-      const progressValue = clamp(
-        100 - (elapsed / ROUND_DURATION_MS) * 100,
-        0,
-        100
-      );
-
-      if (
-        lastTimerFrameRef.current === 0 ||
-        now - lastTimerFrameRef.current >= TIMER_FPS_LIMIT_MS ||
-        progressValue === 0
-      ) {
-        setProgress(progressValue);
-        lastTimerFrameRef.current = now;
-      }
-
-      if (elapsed >= ROUND_DURATION_MS) {
-        pushGlobalRecent(currentIndexRef.current);
-        finishGame("timeout");
-        return;
-      }
-
-      rafRef.current = requestAnimationFrame(tick);
+    timeoutRef.current = () => {
+      pushGlobalRecent(currentIndexRef.current);
+      finishGameRef.current("timeout");
     };
 
-    rafRef.current = requestAnimationFrame(tick);
+    resetTimer();
+    startTimer();
 
     return stopRaf;
-  }, [currentImage, finishGame, isGameOver, isLocked, pushGlobalRecent, stopRaf]);
-
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.repeat) return;
-      if (isTypingTarget(e.target)) return;
-
-      const protectedTarget =
-        e.target instanceof HTMLElement &&
-        e.target.closest("[data-spotfake-protected='true']");
-
-      if (
-        protectedTarget &&
-        (e.ctrlKey || e.metaKey) &&
-        ["s", "u", "c", "x", "p"].includes(e.key.toLowerCase())
-      ) {
-        e.preventDefault();
-        return;
-      }
-
-      if (e.key === "ArrowLeft") {
-        processAnswer("real");
-        return;
-      }
-
-      if (e.key === "ArrowRight") {
-        processAnswer("fake");
-        return;
-      }
-
-      if (e.key === "Enter" && isGameOverRef.current) {
-        handleRestart();
-      }
-    };
-
-    const onContextMenu = (e: MouseEvent) => {
-      const target = e.target;
-      if (!(target instanceof HTMLElement)) return;
-      if (target.closest("[data-spotfake-protected='true']")) {
-        e.preventDefault();
-      }
-    };
-
-    const onDragStart = (e: DragEvent) => {
-      const target = e.target;
-      if (!(target instanceof HTMLElement)) return;
-      if (target.closest("[data-spotfake-protected='true']")) {
-        e.preventDefault();
-      }
-    };
-
-    const onSelectStart = (e: Event) => {
-      const target = e.target;
-      if (!(target instanceof HTMLElement)) return;
-      if (target.closest("[data-spotfake-protected='true']")) {
-        e.preventDefault();
-      }
-    };
-
-    const onCopy = (e: ClipboardEvent) => {
-      const target = e.target;
-      if (!(target instanceof HTMLElement)) return;
-      if (target.closest("[data-spotfake-protected='true']")) {
-        e.preventDefault();
-      }
-    };
-
-    const onCut = (e: ClipboardEvent) => {
-      const target = e.target;
-      if (!(target instanceof HTMLElement)) return;
-      if (target.closest("[data-spotfake-protected='true']")) {
-        e.preventDefault();
-      }
-    };
-
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("contextmenu", onContextMenu);
-    window.addEventListener("dragstart", onDragStart);
-    document.addEventListener("selectstart", onSelectStart);
-    document.addEventListener("copy", onCopy);
-    document.addEventListener("cut", onCut);
-
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("contextmenu", onContextMenu);
-      window.removeEventListener("dragstart", onDragStart);
-      document.removeEventListener("selectstart", onSelectStart);
-      document.removeEventListener("copy", onCopy);
-      document.removeEventListener("cut", onCut);
-    };
-  }, [handleRestart, processAnswer]);
+  }, [currentImage, isGameOver, isLocked, pushGlobalRecent, resetTimer, startTimer, stopRaf]);
 
   useEffect(() => {
     return () => {
@@ -1463,7 +773,7 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
     return "transform 180ms cubic-bezier(0.22,1,0.36,1)";
   }, [cardEntering, cardExiting, isDragging]);
 
-  const isNewRecordAtGameOver = isGameOver && didSetNewRecord;
+  const isNewRecordAtGameOver = isGameOver && score > 0 && score >= best;
 
   if (!currentImage) {
     return <EmptyGameState />;
@@ -1556,105 +866,106 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
                 onPaste={handleProtectedPaste}
                 onMouseDown={handleProtectedMouseDown}
               >
-                <div
-                  key={currentIndex}
-                  onPointerDown={handlePointerDown}
-                  onPointerMove={handlePointerMove}
-                  onPointerUp={handlePointerEnd}
-                  onPointerCancel={handlePointerEnd}
-                  className="relative cursor-grab select-none active:cursor-grabbing"
-                  style={{
-                    touchAction: "pan-y",
-                    transform: cardTransform,
-                    transition: cardTransition,
-                    opacity: cardExiting ? 0 : 1,
-                    WebkitUserSelect: "none",
-                    userSelect: "none",
-                    WebkitTouchCallout: "none",
-                    backfaceVisibility: "hidden",
-                    WebkitBackfaceVisibility: "hidden",
-                    willChange: "transform, opacity",
-                  }}
-                >
-                  <img
-                    src={currentImage.src}
-                    alt={currentImage.alt}
-                    className={`pointer-events-none h-72 w-full select-none object-cover transition-[filter,transform] duration-300 sm:h-80 ${
-                      feedback === "correct"
-                        ? "scale-[1.01] brightness-110"
-                        : feedback === "wrong" || feedback === "timeout"
-                          ? "scale-[1.02] brightness-75 saturate-50"
-                          : "scale-100"
-                    }`}
-                    draggable={false}
-                    loading="eager"
-                    decoding="async"
-                    onDragStart={(e) => e.preventDefault()}
+                <div key={currentIndex} className="relative">
+                  <div
+                    onPointerDown={handlePointerDown}
+                    onPointerMove={handlePointerMove}
+                    onPointerUp={handlePointerEnd}
+                    onPointerCancel={handlePointerEnd}
+                    className="relative cursor-grab select-none active:cursor-grabbing"
                     style={{
+                      touchAction: "pan-y",
+                      transform: cardTransform,
+                      transition: cardTransition,
+                      opacity: cardExiting ? 0 : 1,
+                      WebkitUserSelect: "none",
+                      userSelect: "none",
+                      WebkitTouchCallout: "none",
                       backfaceVisibility: "hidden",
                       WebkitBackfaceVisibility: "hidden",
-                      transform: "translateZ(0)",
+                      willChange: "transform, opacity",
                     }}
-                  />
-
-                  <div className="pointer-events-none absolute inset-0">
-                    <div
-                      className="absolute left-3 top-3 rounded-full border px-4 py-2 text-xs font-black uppercase tracking-[0.24em]"
+                  >
+                    <img
+                      src={currentImage.src}
+                      alt={currentImage.alt}
+                      className={`pointer-events-none h-72 w-full select-none object-cover transition-[filter,transform] duration-300 sm:h-80 ${
+                        feedback === "correct"
+                          ? "scale-[1.01] brightness-110"
+                          : feedback === "wrong" || feedback === "timeout"
+                            ? "scale-[1.02] brightness-75 saturate-50"
+                            : "scale-100"
+                      }`}
+                      draggable={false}
+                      loading="eager"
+                      decoding="async"
+                      onDragStart={(e) => e.preventDefault()}
                       style={{
-                        opacity: Math.max(0, (-dragX - 16) / 70),
-                        borderColor: "rgba(255,255,255,0.95)",
-                        background: "rgba(255,255,255,0.90)",
-                        color: "#000",
-                        transform: `scale(${1 + Math.max(0, (-dragX - 16) / 700)})`,
-                      }}
-                    >
-                      REAL ✓
-                    </div>
-
-                    <div
-                      className="absolute right-3 top-3 rounded-full border px-4 py-2 text-xs font-black uppercase tracking-[0.24em]"
-                      style={{
-                        opacity: Math.max(0, (dragX - 16) / 70),
-                        borderColor: "rgba(236,72,153,0.95)",
-                        background: "rgba(236,72,153,0.90)",
-                        color: "#fff",
-                        transform: `scale(${1 + Math.max(0, (dragX - 16) / 700)})`,
-                      }}
-                    >
-                      FAKE ✗
-                    </div>
-
-                    <div
-                      className="absolute inset-0"
-                      style={{
-                        opacity: Math.min(0.14, Math.abs(dragX) / MAX_DRAG_PX),
-                        background:
-                          dragX < 0 ? "rgba(255,255,255,1)" : "rgba(236,72,153,1)",
+                        backfaceVisibility: "hidden",
+                        WebkitBackfaceVisibility: "hidden",
+                        transform: "translateZ(0)",
                       }}
                     />
 
-                    {feedback === "correct" && (
+                    <div className="pointer-events-none absolute inset-0">
                       <div
-                        className="absolute inset-0 flex items-center justify-center bg-emerald-500/18"
-                        style={{ animation: "feedbackIn 0.18s ease" }}
+                        className="absolute left-3 top-3 rounded-full border px-4 py-2 text-xs font-black uppercase tracking-[0.24em]"
+                        style={{
+                          opacity: Math.max(0, (-dragX - 16) / 70),
+                          borderColor: "rgba(255,255,255,0.95)",
+                          background: "rgba(255,255,255,0.90)",
+                          color: "#000",
+                          transform: `scale(${1 + Math.max(0, (-dragX - 16) / 700)})`,
+                        }}
                       >
-                        <div className="rounded-full bg-emerald-400/92 px-5 py-2.5 text-sm font-black text-white shadow-lg shadow-emerald-500/30">
-                          ✓ {currentImage.type.toUpperCase()}
-                        </div>
+                        REAL ✓
                       </div>
-                    )}
 
-                    {(feedback === "wrong" || feedback === "timeout") && (
                       <div
-                        className="absolute inset-0 flex items-center justify-center bg-red-500/18"
-                        style={{ animation: "feedbackIn 0.18s ease" }}
+                        className="absolute right-3 top-3 rounded-full border px-4 py-2 text-xs font-black uppercase tracking-[0.24em]"
+                        style={{
+                          opacity: Math.max(0, (dragX - 16) / 70),
+                          borderColor: "rgba(236,72,153,0.95)",
+                          background: "rgba(236,72,153,0.90)",
+                          color: "#fff",
+                          transform: `scale(${1 + Math.max(0, (dragX - 16) / 700)})`,
+                        }}
                       >
-                        <div className="rounded-full bg-red-500/92 px-5 py-2.5 text-sm font-black text-white shadow-lg shadow-red-500/30">
-                          {feedback === "timeout" ? "⏱ TIME" : "✗"} —{" "}
-                          {currentImage.type.toUpperCase()}
-                        </div>
+                        FAKE ✗
                       </div>
-                    )}
+
+                      <div
+                        className="absolute inset-0"
+                        style={{
+                          opacity: Math.min(0.14, Math.abs(dragX) / 180),
+                          background:
+                            dragX < 0 ? "rgba(255,255,255,1)" : "rgba(236,72,153,1)",
+                        }}
+                      />
+
+                      {feedback === "correct" && (
+                        <div
+                          className="absolute inset-0 flex items-center justify-center bg-emerald-500/18"
+                          style={{ animation: "feedbackIn 0.18s ease" }}
+                        >
+                          <div className="rounded-full bg-emerald-400/92 px-5 py-2.5 text-sm font-black text-white shadow-lg shadow-emerald-500/30">
+                            ✓ {currentImage.type.toUpperCase()}
+                          </div>
+                        </div>
+                      )}
+
+                      {(feedback === "wrong" || feedback === "timeout") && (
+                        <div
+                          className="absolute inset-0 flex items-center justify-center bg-red-500/18"
+                          style={{ animation: "feedbackIn 0.18s ease" }}
+                        >
+                          <div className="rounded-full bg-red-500/92 px-5 py-2.5 text-sm font-black text-white shadow-lg shadow-red-500/30">
+                            {feedback === "timeout" ? "⏱ TIME" : "✗"} —{" "}
+                            {currentImage.type.toUpperCase()}
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1669,7 +980,7 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
                 className="group rounded-[1.35rem] border border-white/10 bg-zinc-800 px-4 py-4 text-left transition-all duration-150 hover:scale-[1.02] hover:border-white/20 hover:bg-zinc-700 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <div className="text-[10px] font-bold uppercase tracking-[0.22em] text-zinc-500 transition group-hover:text-zinc-400">
-                  ← Arrow left
+                  ← Arrow left / A
                 </div>
                 <div className="mt-1 text-lg font-black tracking-wide text-white">
                   REAL
@@ -1682,7 +993,7 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
                 className="group rounded-[1.35rem] bg-gradient-to-r from-pink-500 to-purple-500 px-4 py-4 text-left text-white shadow-lg shadow-pink-500/20 transition-all duration-150 hover:scale-[1.02] hover:shadow-pink-500/35 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <div className="text-[10px] font-bold uppercase tracking-[0.22em] text-pink-100/70">
-                  Arrow right →
+                  Arrow right / D
                 </div>
                 <div className="mt-1 text-lg font-black tracking-wide">FAKE</div>
               </button>
@@ -1782,7 +1093,7 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
                   )}
 
                   <button
-                    onClick={handleRestart}
+                    onClick={restartGame}
                     className="mt-4 inline-flex items-center justify-center gap-2 rounded-full bg-gradient-to-r from-pink-500 via-fuchsia-500 to-purple-500 px-7 py-3 text-sm font-black text-white shadow-lg shadow-pink-500/25 transition hover:scale-[1.04] active:scale-[0.97]"
                   >
                     <span>🎯</span>
@@ -1808,7 +1119,8 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
                   <p className="mt-1.5 text-sm leading-6 text-zinc-500">
                     Swipe or tap — <span className="font-semibold text-white">Real</span>{" "}
                     or <span className="font-semibold text-pink-300">Fake</span>.
-                    One mistake ends your streak. Difficulty scales with score.
+                    One mistake ends your streak. Difficulty varies naturally from one
+                    image to another.
                   </p>
                 </div>
               )}
@@ -1819,10 +1131,6 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
     </>
   );
 }
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Export
-// ──────────────────────────────────────────────────────────────────────────────
 
 export default function GamePreview(props: GamePreviewProps) {
   const isClient = useSyncExternalStore(
