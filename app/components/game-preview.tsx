@@ -21,6 +21,7 @@ import {
 import type {
   Answer,
   Feedback,
+  GameOverPayload,
   GamePreviewProps,
   MockImage,
   SubmitState,
@@ -44,7 +45,7 @@ import { useSwipeControls } from "@/app/components/hooks/use-swipe-controls";
 const images = mockImages as MockImage[];
 
 // ──────────────────────────────────────────────────────────────────────────────
-// UI
+// UI atoms
 // ──────────────────────────────────────────────────────────────────────────────
 
 function GamePreviewSkeleton() {
@@ -60,8 +61,8 @@ function GamePreviewSkeleton() {
           <div className="h-72 rounded-[1.6rem] bg-white/5 sm:h-80" />
           <div className="h-2 rounded-full bg-white/10" />
           <div className="grid grid-cols-2 gap-3">
-            <div className="h-14 rounded-2xl bg-white/8" />
-            <div className="h-14 rounded-2xl bg-white/8" />
+            <div className="h-14 rounded-2xl bg-white/10" />
+            <div className="h-14 rounded-2xl bg-white/10" />
           </div>
         </div>
       </div>
@@ -90,20 +91,25 @@ function EmptyGameState() {
   );
 }
 
-function DifficultyBadge({ difficulty }: { difficulty: MockImage["difficulty"] }) {
-  const styles: Record<MockImage["difficulty"], string> = {
-    easy: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
-    medium: "border-amber-500/30 bg-amber-500/10 text-amber-300",
-    hard: "border-red-500/30 bg-red-500/10 text-red-300",
-  };
-
-  return (
-    <span
-      className={`rounded-full border px-2.5 py-0.5 text-[10px] font-black uppercase tracking-[0.2em] transition-colors duration-300 ${styles[difficulty]}`}
-    >
-      {difficulty}
-    </span>
-  );
+function getStreakTier(score: number) {
+  if (score >= 15) {
+    return {
+      color:
+        "text-yellow-300 drop-shadow-[0_0_8px_rgba(253,224,71,0.6)]",
+      emoji: "🔥",
+    };
+  }
+  if (score >= 8) {
+    return {
+      color:
+        "text-fuchsia-300 drop-shadow-[0_0_6px_rgba(232,121,249,0.5)]",
+      emoji: "⚡",
+    };
+  }
+  if (score >= 4) {
+    return { color: "text-pink-300", emoji: "🎯" };
+  }
+  return { color: "text-white", emoji: "🔥" };
 }
 
 function StreakCounter({
@@ -113,20 +119,11 @@ function StreakCounter({
   score: number;
   bumped: boolean;
 }) {
-  const tier =
-    score >= 15
-      ? "text-yellow-300 drop-shadow-[0_0_8px_rgba(253,224,71,0.6)]"
-      : score >= 8
-        ? "text-fuchsia-300 drop-shadow-[0_0_6px_rgba(232,121,249,0.5)]"
-        : score >= 4
-          ? "text-pink-300"
-          : "text-white";
-
-  const emoji = score >= 15 ? "🔥" : score >= 8 ? "⚡" : score >= 4 ? "🎯" : "🔥";
+  const { color, emoji } = getStreakTier(score);
 
   return (
     <div
-      className={`shrink-0 rounded-full border border-pink-500/20 bg-pink-500/10 px-3 py-1 text-sm font-black ${tier}`}
+      className={`shrink-0 rounded-full border border-pink-500/25 bg-pink-500/10 px-3 py-1 text-sm font-black ${color}`}
       style={{
         transform: bumped ? "scale(1.28)" : "scale(1)",
         transition: "transform 200ms cubic-bezier(0.34,1.56,0.64,1)",
@@ -134,6 +131,14 @@ function StreakCounter({
     >
       {emoji} {score}
     </div>
+  );
+}
+
+function CategoryBadge({ category }: { category: MockImage["category"] }) {
+  return (
+    <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-400">
+      {category}
+    </span>
   );
 }
 
@@ -169,12 +174,12 @@ function TimerBar({
   return (
     <div className="mt-4">
       <div className="mb-1.5 flex items-center justify-between">
-        <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-600">
+        <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">
           Decision timer
         </span>
         <span
           className={`text-[10px] font-black tabular-nums ${
-            isPanic && !feedback ? "text-red-400" : "text-zinc-500"
+            isPanic && !feedback ? "text-red-400" : "text-zinc-400"
           }`}
         >
           {secondsLeft}s
@@ -182,7 +187,7 @@ function TimerBar({
       </div>
 
       <div
-        className={`relative h-2 overflow-hidden rounded-full bg-white/8 ${
+        className={`relative h-2 overflow-hidden rounded-full bg-white/10 ${
           isPanic && !feedback
             ? "animate-[timerPulse_0.45s_ease-in-out_infinite]"
             : ""
@@ -206,10 +211,11 @@ function CardStack({ nextSrc }: { nextSrc?: string }) {
         style={{ transform: "scale(0.90) translateY(10px)", zIndex: 0 }}
       />
       <div
-        className="absolute inset-0 overflow-hidden rounded-[1.6rem] border border-white/8 bg-zinc-900"
+        className="absolute inset-0 overflow-hidden rounded-[1.6rem] border border-white/10 bg-zinc-900"
         style={{ transform: "scale(0.95) translateY(5px)", zIndex: 1 }}
       >
         {nextSrc ? (
+          // eslint-disable-next-line @next/next/no-img-element
           <img
             src={nextSrc}
             alt=""
@@ -256,17 +262,22 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
   const [currentIndex, setCurrentIndex] = useState(initialRound.currentIndex);
   const [nextIndex, setNextIndex] = useState(initialRound.nextIndex);
 
+  // ── Refs mirroring state for access from async/timer callbacks ──
   const scoreRef = useRef(score);
+  const bestRef = useRef(best);
   const isGameOverRef = useRef(isGameOver);
   const isLockedRef = useRef(isLocked);
   const correctAnswersRef = useRef(correctAnswers);
   const wrongAnswersRef = useRef(wrongAnswers);
   const currentIndexRef = useRef(currentIndex);
+  const nextIndexRef = useRef(nextIndex);
 
   const submittedRef = useRef(false);
   const sessionStartRef = useRef(0);
   const avgReactionMsRef = useRef(0);
   const roundAnswerStartedAtRef = useRef(0);
+  const swipePendingRef = useRef(false);
+  const pendingGameOverPayloadRef = useRef<GameOverPayload | null>(null);
 
   const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const enterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -277,9 +288,14 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
   const finishGameRef = useRef<(reason: "wrong" | "timeout") => void>(() => {});
   const commitSwipeRef = useRef<(answer: Answer) => void>(() => {});
 
+  // ── Keep refs in sync with state ──
   useEffect(() => {
     scoreRef.current = score;
   }, [score]);
+
+  useEffect(() => {
+    bestRef.current = best;
+  }, [best]);
 
   useEffect(() => {
     isGameOverRef.current = isGameOver;
@@ -301,10 +317,23 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
     currentIndexRef.current = currentIndex;
   }, [currentIndex]);
 
+  useEffect(() => {
+    nextIndexRef.current = nextIndex;
+  }, [nextIndex]);
+
+  // Fire the onGameOver callback once the isGameOver flip has rendered.
+  useEffect(() => {
+    const payload = pendingGameOverPayloadRef.current;
+    if (!payload) return;
+
+    pendingGameOverPayloadRef.current = null;
+    onGameOver?.(payload);
+  }, [isGameOver, onGameOver]);
+
   const currentImage = currentIndex >= 0 ? images[currentIndex] : undefined;
   const nextImage = nextIndex >= 0 ? images[nextIndex] : undefined;
-  const currentDifficulty = currentImage?.difficulty ?? "easy";
 
+  // ── Timer cleanup helpers ──
   const stopFeedbackTimer = useCallback(() => {
     if (feedbackTimerRef.current !== null) {
       clearTimeout(feedbackTimerRef.current);
@@ -331,19 +360,13 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
     abortControllerRef.current = null;
   }, []);
 
-  const {
-    progress,
-    isPanic,
-    startTimer,
-    stopRaf,
-    resetTimer,
-    setProgress,
-  } = useRoundTimer({
-    durationMs: ROUND_DURATION_MS,
-    panicThresholdMs: PANIC_THRESHOLD_MS,
-    fpsLimitMs: TIMER_FPS_LIMIT_MS,
-    onTimeout: () => timeoutRef.current(),
-  });
+  const { progress, isPanic, startTimer, stopRaf, resetTimer, setProgress } =
+    useRoundTimer({
+      durationMs: ROUND_DURATION_MS,
+      panicThresholdMs: PANIC_THRESHOLD_MS,
+      fpsLimitMs: TIMER_FPS_LIMIT_MS,
+      onTimeout: () => timeoutRef.current(),
+    });
 
   const clearAllTimers = useCallback(() => {
     stopRaf();
@@ -368,11 +391,16 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
   const updateReactionAverage = useCallback(() => {
     if (!roundAnswerStartedAtRef.current) return;
 
-    const reactionMs = Math.max(0, Math.round(nowMs() - roundAnswerStartedAtRef.current));
+    const reactionMs = Math.max(
+      0,
+      Math.round(nowMs() - roundAnswerStartedAtRef.current)
+    );
 
     let nextAvg = reactionMs;
     if (avgReactionMsRef.current !== 0) {
-      nextAvg = Math.round(avgReactionMsRef.current * 0.78 + reactionMs * 0.22);
+      nextAvg = Math.round(
+        avgReactionMsRef.current * 0.78 + reactionMs * 0.22
+      );
     }
 
     avgReactionMsRef.current = nextAvg;
@@ -397,7 +425,10 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
 
       try {
         const guestToken = window.localStorage.getItem("spotfake_guest_token");
-        const durationMs = Math.max(0, Math.round(nowMs() - sessionStartRef.current));
+        const durationMs = Math.max(
+          0,
+          Math.round(nowMs() - sessionStartRef.current)
+        );
         const img = images[currentIndexRef.current];
 
         const response = await fetch("/api/game/session", {
@@ -414,9 +445,8 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
             correctAnswers: finalCorrect,
             wrongAnswers: finalWrong,
             timedOut: reason === "timeout",
-            flawless: finalScore > 0 && finalWrong === 0 && reason !== "timeout",
+            flawless: false,
             durationMs,
-            difficultyReached: images[currentIndexRef.current]?.difficulty ?? "easy",
             category: img?.category ?? null,
             endedBy: reason,
             avgReactionMs: avgReactionMsRef.current || null,
@@ -444,13 +474,19 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
       if (isGameOverRef.current) return;
 
       clearAllTimers();
+      swipePendingRef.current = false;
       isLockedRef.current = true;
 
       const finalScore = scoreRef.current;
+      const previousBest = bestRef.current;
       const finalCorrect = correctAnswersRef.current;
       const finalWrong =
-        reason === "wrong" ? wrongAnswersRef.current + 1 : wrongAnswersRef.current;
+        reason === "wrong"
+          ? wrongAnswersRef.current + 1
+          : wrongAnswersRef.current;
       const img = images[currentIndexRef.current];
+      const nextBest = Math.max(previousBest, finalScore);
+      const isNewRecord = finalScore > previousBest;
 
       haptic(reason === "wrong" ? [80, 30, 80] : [200]);
 
@@ -466,23 +502,20 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
 
       resetPointerState();
 
-      setBest((prev) => {
-        const nextBest = Math.max(prev, finalScore);
-        saveBestScore(nextBest);
+      saveBestScore(nextBest);
+      bestRef.current = nextBest;
+      setBest(nextBest);
 
-        onGameOver?.({
-          streak: finalScore,
-          score: finalScore,
-          isNewRecord: finalScore > prev,
-          flawless: finalScore > 0 && finalWrong === 0 && reason !== "timeout",
-        });
-
-        return nextBest;
-      });
+      pendingGameOverPayloadRef.current = {
+        streak: finalScore,
+        score: finalScore,
+        isNewRecord,
+        flawless: false,
+      };
 
       void submitSession(reason, finalScore, finalCorrect, finalWrong);
     },
-    [clearAllTimers, onGameOver, resetPointerState, setProgress, submitSession]
+    [clearAllTimers, resetPointerState, setProgress, submitSession]
   );
 
   useEffect(() => {
@@ -491,41 +524,63 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
 
   const advanceRound = useCallback(
     (nextScore: number) => {
-      const { nextCurrent, nextNext } = buildNextRound({
-        currentIndex: currentIndexRef.current,
+      const promotedCurrent = nextIndexRef.current;
+
+      // Helper: apply common "next round visible" side effects.
+      const commitPromotion = (newCurrent: number, newNext: number) => {
+        setProgress(100);
+        setFeedback(null);
+        setRevealedType(null);
+
+        swipePendingRef.current = false;
+        isLockedRef.current = false;
+        setIsLocked(false);
+
+        resetPointerState();
+
+        setCurrentIndex(newCurrent);
+        setNextIndex(newNext);
+
+        requestAnimationFrame(() => {
+          setCardExiting(null);
+          setCardEntering(true);
+
+          stopEnterTimer();
+          enterTimerRef.current = setTimeout(() => {
+            setCardEntering(false);
+          }, ENTER_ANIMATION_MS);
+        });
+
+        preloadLookahead({
+          currentIndex: newCurrent,
+          baseScore: nextScore,
+          avgReactionMs: avgReactionMsRef.current,
+        });
+      };
+
+      // Fallback: next card wasn't available — rebuild from scratch.
+      if (promotedCurrent < 0 || !images[promotedCurrent]) {
+        const fallback = buildInitialRound();
+        commitPromotion(fallback.currentIndex, fallback.nextIndex);
+        return;
+      }
+
+      const generated = buildNextRound({
+        currentIndex: promotedCurrent,
         nextScore,
         avgReactionMs: avgReactionMsRef.current,
       });
 
-      setProgress(100);
-      setFeedback(null);
-      setRevealedType(null);
-
-      isLockedRef.current = false;
-      setIsLocked(false);
-
-      resetPointerState();
-
-      setCurrentIndex(nextCurrent);
-      setNextIndex(nextNext);
-
-      requestAnimationFrame(() => {
-        setCardExiting(null);
-        setCardEntering(true);
-
-        stopEnterTimer();
-        enterTimerRef.current = setTimeout(() => {
-          setCardEntering(false);
-        }, ENTER_ANIMATION_MS);
-      });
-
-      preloadLookahead({
-        currentIndex: nextCurrent,
-        baseScore: nextScore,
-        avgReactionMs: avgReactionMsRef.current,
-      });
+      commitPromotion(promotedCurrent, generated.nextCurrent);
     },
-    [buildNextRound, preloadLookahead, resetPointerState, setProgress, stopEnterTimer]
+    [
+      buildInitialRound,
+      buildNextRound,
+      preloadLookahead,
+      resetPointerState,
+      setProgress,
+      stopEnterTimer,
+    ]
   );
 
   const handleCorrectAnswer = useCallback(() => {
@@ -534,6 +589,7 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
     haptic(40);
 
     const nextScore = scoreRef.current + 1;
+    const nextBest = Math.max(bestRef.current, nextScore);
 
     isLockedRef.current = true;
     setIsLocked(true);
@@ -542,17 +598,15 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
     setScore(nextScore);
     setCorrectAnswers((prev) => prev + 1);
 
+    saveBestScore(nextBest);
+    bestRef.current = nextBest;
+    setBest(nextBest);
+
     setStreakBumped(true);
     stopBumpTimer();
     bumpTimerRef.current = setTimeout(() => {
       setStreakBumped(false);
     }, BUMP_ANIMATION_MS);
-
-    setBest((prev) => {
-      const nextBest = Math.max(prev, nextScore);
-      saveBestScore(nextBest);
-      return nextBest;
-    });
 
     setCardExiting(nextScore % 2 === 0 ? "right" : "left");
     pushGlobalRecent(currentIndexRef.current);
@@ -571,12 +625,14 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
   ]);
 
   const processAnswer = useCallback(
-    (answer: Answer) => {
+    (answer: Answer, options?: { bypassLock?: boolean }) => {
       const img = images[currentIndexRef.current];
       if (!img) return;
-      if (isGameOverRef.current || isLockedRef.current) return;
+      if (isGameOverRef.current) return;
+      if (!options?.bypassLock && isLockedRef.current) return;
 
       isLockedRef.current = true;
+      setIsLocked(true);
 
       if (img.type === answer) {
         handleCorrectAnswer();
@@ -590,15 +646,22 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
 
   const commitSwipeHandler = useCallback(
     (answer: Answer) => {
-      if (isGameOverRef.current || isLockedRef.current) return;
+      if (
+        isGameOverRef.current ||
+        isLockedRef.current ||
+        swipePendingRef.current
+      ) {
+        return;
+      }
 
+      swipePendingRef.current = true;
       isLockedRef.current = true;
       setIsLocked(true);
       setCardExiting(answer === "real" ? "left" : "right");
 
       stopFeedbackTimer();
       feedbackTimerRef.current = setTimeout(() => {
-        processAnswer(answer);
+        processAnswer(answer, { bypassLock: true });
         setCardExiting(null);
         resetPointerState();
       }, EXIT_ANIMATION_MS);
@@ -617,6 +680,8 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
 
     resetRandomizer();
     submittedRef.current = false;
+    swipePendingRef.current = false;
+    pendingGameOverPayloadRef.current = null;
     sessionStartRef.current = nowMs();
     avgReactionMsRef.current = 0;
     roundAnswerStartedAtRef.current = 0;
@@ -624,10 +689,14 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
     const fresh = buildInitialRound();
 
     setScore(0);
+    scoreRef.current = 0;
+
     setCorrectAnswers(0);
     setWrongAnswers(0);
 
     isLockedRef.current = false;
+    isGameOverRef.current = false;
+
     setIsLocked(false);
     setIsGameOver(false);
     setFeedback(null);
@@ -706,7 +775,15 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
     startTimer();
 
     return stopRaf;
-  }, [currentImage, isGameOver, isLocked, pushGlobalRecent, resetTimer, startTimer, stopRaf]);
+  }, [
+    currentImage,
+    isGameOver,
+    isLocked,
+    pushGlobalRecent,
+    resetTimer,
+    startTimer,
+    stopRaf,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -716,6 +793,7 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
     };
   }, [abortSubmit, clearAllTimers, resetPointerState]);
 
+  // ── Derived UI values ──
   const statusText = useMemo(() => {
     if (feedback === "correct") return "Correct.";
     if (feedback === "wrong") return "Wrong call.";
@@ -779,6 +857,16 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
     return <EmptyGameState />;
   }
 
+  // ── Text shown in the bottom info panel while playing ──
+  const correctFeedbackHint =
+    score >= 15
+      ? " — you're on fire."
+      : score >= 8
+        ? " — you're in the zone."
+        : score >= 4
+          ? " — building momentum."
+          : " — keep going.";
+
   return (
     <>
       <style>{`
@@ -816,9 +904,10 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.05),transparent_26%)]" />
 
           <div className="relative">
+            {/* Header row */}
             <div className="mb-4 flex items-start justify-between gap-4">
               <div className="min-w-0">
-                <div className="text-[10px] font-bold uppercase tracking-[0.26em] text-zinc-600">
+                <div className="text-[10px] font-bold uppercase tracking-[0.26em] text-zinc-500">
                   {mode} mode
                 </div>
 
@@ -840,18 +929,16 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
               <StreakCounter score={score} bumped={streakBumped} />
             </div>
 
+            {/* Meta row — category + swipe hint */}
             <div className="mb-3 flex flex-wrap items-center gap-1.5">
-              <DifficultyBadge difficulty={currentDifficulty} />
+              <CategoryBadge category={currentImage.category} />
 
-              <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
-                {currentImage.category}
-              </span>
-
-              <span className="ml-auto rounded-full border border-white/10 bg-white/5 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-600">
+              <span className="ml-auto rounded-full border border-white/10 bg-white/5 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
                 ← Real · Fake →
               </span>
             </div>
 
+            {/* Card */}
             <div className="relative" style={{ zIndex: 2 }}>
               <CardStack nextSrc={nextImage?.src} />
 
@@ -886,6 +973,7 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
                       willChange: "transform, opacity",
                     }}
                   >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={currentImage.src}
                       alt={currentImage.alt}
@@ -907,6 +995,7 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
                       }}
                     />
 
+                    {/* Swipe indicators */}
                     <div className="pointer-events-none absolute inset-0">
                       <div
                         className="absolute left-3 top-3 rounded-full border px-4 py-2 text-xs font-black uppercase tracking-[0.24em]"
@@ -915,7 +1004,9 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
                           borderColor: "rgba(255,255,255,0.95)",
                           background: "rgba(255,255,255,0.90)",
                           color: "#000",
-                          transform: `scale(${1 + Math.max(0, (-dragX - 16) / 700)})`,
+                          transform: `scale(${
+                            1 + Math.max(0, (-dragX - 16) / 700)
+                          })`,
                         }}
                       >
                         REAL ✓
@@ -928,7 +1019,9 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
                           borderColor: "rgba(236,72,153,0.95)",
                           background: "rgba(236,72,153,0.90)",
                           color: "#fff",
-                          transform: `scale(${1 + Math.max(0, (dragX - 16) / 700)})`,
+                          transform: `scale(${
+                            1 + Math.max(0, (dragX - 16) / 700)
+                          })`,
                         }}
                       >
                         FAKE ✗
@@ -939,7 +1032,9 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
                         style={{
                           opacity: Math.min(0.14, Math.abs(dragX) / 180),
                           background:
-                            dragX < 0 ? "rgba(255,255,255,1)" : "rgba(236,72,153,1)",
+                            dragX < 0
+                              ? "rgba(255,255,255,1)"
+                              : "rgba(236,72,153,1)",
                         }}
                       />
 
@@ -971,15 +1066,20 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
               </div>
             </div>
 
-            <TimerBar progress={progress} feedback={feedback} isPanic={isPanic} />
+            <TimerBar
+              progress={progress}
+              feedback={feedback}
+              isPanic={isPanic}
+            />
 
+            {/* Action buttons */}
             <div className="mt-4 grid grid-cols-2 gap-3">
               <button
                 onClick={() => processAnswer("real")}
                 disabled={isGameOver || isLocked}
                 className="group rounded-[1.35rem] border border-white/10 bg-zinc-800 px-4 py-4 text-left transition-all duration-150 hover:scale-[1.02] hover:border-white/20 hover:bg-zinc-700 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <div className="text-[10px] font-bold uppercase tracking-[0.22em] text-zinc-500 transition group-hover:text-zinc-400">
+                <div className="text-[10px] font-bold uppercase tracking-[0.22em] text-zinc-400 transition group-hover:text-zinc-300">
                   ← Arrow left / A
                 </div>
                 <div className="mt-1 text-lg font-black tracking-wide text-white">
@@ -990,15 +1090,18 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
               <button
                 onClick={() => processAnswer("fake")}
                 disabled={isGameOver || isLocked}
-                className="group rounded-[1.35rem] bg-gradient-to-r from-pink-500 to-purple-500 px-4 py-4 text-left text-white shadow-lg shadow-pink-500/20 transition-all duration-150 hover:scale-[1.02] hover:shadow-pink-500/35 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50"
+                className="group rounded-[1.35rem] bg-gradient-to-r from-pink-500 to-purple-500 px-4 py-4 text-left text-white shadow-lg shadow-pink-500/25 transition-all duration-150 hover:scale-[1.02] hover:shadow-pink-500/35 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <div className="text-[10px] font-bold uppercase tracking-[0.22em] text-pink-100/70">
                   Arrow right / D
                 </div>
-                <div className="mt-1 text-lg font-black tracking-wide">FAKE</div>
+                <div className="mt-1 text-lg font-black tracking-wide">
+                  FAKE
+                </div>
               </button>
             </div>
 
+            {/* Stats grid */}
             <div className="mt-3 grid grid-cols-4 gap-2">
               {[
                 {
@@ -1024,19 +1127,22 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
               ].map(({ label, value, color }) => (
                 <div
                   key={label}
-                  className="rounded-2xl border border-white/8 bg-white/[0.032] p-3 text-center"
+                  className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 text-center"
                 >
-                  <div className="text-[9px] uppercase tracking-widest text-zinc-600">
+                  <div className="text-[9px] uppercase tracking-widest text-zinc-500">
                     {label}
                   </div>
-                  <div className={`mt-1 text-base font-black capitalize ${color}`}>
+                  <div
+                    className={`mt-1 text-base font-black capitalize ${color}`}
+                  >
                     {value}
                   </div>
                 </div>
               ))}
             </div>
 
-            <div className="mt-3 overflow-hidden rounded-[1.4rem] border border-white/8 bg-white/[0.028]">
+            {/* Bottom info panel — game over / correct feedback / how-to-play */}
+            <div className="mt-3 overflow-hidden rounded-[1.4rem] border border-white/10 bg-white/[0.03]">
               {isGameOver ? (
                 <div
                   className="p-5 text-center"
@@ -1048,16 +1154,19 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
                       : `Wrong call — it was ${currentImage.type.toUpperCase()}.`}
                   </div>
 
-                  <div className="mt-3 flex flex-wrap items-center justify-center gap-3 text-[11px] text-zinc-600">
+                  <div className="mt-3 flex flex-wrap items-center justify-center gap-3 text-[11px] text-zinc-500">
                     <span>
-                      Streak <span className="font-black text-white">{score}</span>
+                      Streak{" "}
+                      <span className="font-black text-white">{score}</span>
                     </span>
                     <span>·</span>
                     <span>
                       Best{" "}
                       <span
                         className={`font-black ${
-                          isNewRecordAtGameOver ? "text-yellow-300" : "text-white"
+                          isNewRecordAtGameOver
+                            ? "text-yellow-300"
+                            : "text-white"
                         }`}
                       >
                         {best}
@@ -1070,7 +1179,7 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
                           ? "font-bold text-emerald-400"
                           : submitState === "error"
                             ? "font-bold text-red-400"
-                            : "text-zinc-600"
+                            : "text-zinc-500"
                       }
                     >
                       {submitState === "submitting"
@@ -1104,23 +1213,29 @@ function GamePreviewInner({ mode = "solo", onGameOver }: GamePreviewProps) {
                   </button>
                 </div>
               ) : feedback === "correct" ? (
-                <div className="p-4" style={{ animation: "feedbackIn 0.2s ease" }}>
-                  <div className="text-sm font-bold text-emerald-300">Correct.</div>
-                  <p className="mt-1 text-sm leading-6 text-zinc-500">
+                <div
+                  className="p-4"
+                  style={{ animation: "feedbackIn 0.2s ease" }}
+                >
+                  <div className="text-sm font-bold text-emerald-300">
+                    Correct.
+                  </div>
+                  <p className="mt-1 text-sm leading-6 text-zinc-400">
                     Streak {score}
-                    {score >= 4 ? " — difficulty rising." : " — keep going."}
+                    {correctFeedbackHint}
                   </p>
                 </div>
               ) : (
                 <div className="p-4">
-                  <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-600">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">
                     How to play
                   </div>
-                  <p className="mt-1.5 text-sm leading-6 text-zinc-500">
-                    Swipe or tap — <span className="font-semibold text-white">Real</span>{" "}
-                    or <span className="font-semibold text-pink-300">Fake</span>.
-                    One mistake ends your streak. Difficulty varies naturally from one
-                    image to another.
+                  <p className="mt-1.5 text-sm leading-6 text-zinc-400">
+                    Swipe or tap —{" "}
+                    <span className="font-semibold text-white">Real</span> or{" "}
+                    <span className="font-semibold text-pink-300">Fake</span>.
+                    One mistake ends your streak. Stay sharp — the images rotate
+                    through every category.
                   </p>
                 </div>
               )}

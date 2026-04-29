@@ -19,12 +19,6 @@ enum GameMode {
   tournament
 }
 
-enum GameDifficulty {
-  easy
-  medium
-  hard
-}
-
 enum SessionEndReason {
   wrong
   timeout
@@ -49,7 +43,7 @@ model Profile {
   avatarUrl       String?
   isGuest         Boolean       @default(false)
   guestToken      String?       @unique
-  provider        String?
+  provider      String?
   lastLoginAt     DateTime?
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
@@ -113,7 +107,6 @@ model GameSession {
   flawless           Boolean          @default(false)
 
   durationMs         Int              @default(0)
-  difficultyReached  GameDifficulty?
   category           ImageCategory?
 
   createdAt          DateTime         @default(now())

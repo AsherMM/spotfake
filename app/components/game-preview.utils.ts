@@ -1,6 +1,5 @@
 import type {
   Answer,
-  Difficulty,
   ImageCategory,
   MockImage,
 } from "@/app/components/game-preview.types";
@@ -83,33 +82,6 @@ export function saveGlobalRecentHistory(indexes: number[]) {
   } catch {
     // no-op
   }
-}
-
-export function getDifficulty(score: number): Difficulty {
-  if (score >= 8) return "hard";
-  if (score >= 4) return "medium";
-  return "easy";
-}
-
-export function getAdaptiveDifficulty(
-  score: number,
-  avgReactionMs: number
-): Difficulty {
-  const base = getDifficulty(score);
-
-  if (avgReactionMs > 0 && avgReactionMs <= 850) {
-    if (score >= 6) return "hard";
-    if (score >= 3) return "medium";
-    return "easy";
-  }
-
-  if (avgReactionMs >= 1600) {
-    if (score >= 10) return "hard";
-    if (score >= 5) return "medium";
-    return "easy";
-  }
-
-  return base;
 }
 
 export function haptic(pattern: number | number[]) {
